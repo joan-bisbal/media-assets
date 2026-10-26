@@ -1693,6 +1693,35 @@
                 } catch (e) {}
                 videoEl.play().catch(() => {});
             });
+
+            // Resiliency: watchdog for unexpected pauses or buffering stalls
+            videoEl.addEventListener('stalled', () => {
+                if (currentActiveVideoEl === videoEl && !appState.isBlackScreen) {
+                    setTimeout(() => {
+                        if (currentActiveVideoEl === videoEl && !appState.isBlackScreen && videoEl.paused) {
+                            videoEl.play().catch(() => {});
+                        }
+                    }, 100);
+                }
+            });
+            videoEl.addEventListener('waiting', () => {
+                const resumeOnCanPlay = () => {
+                    videoEl.removeEventListener('canplay', resumeOnCanPlay);
+                    if (currentActiveVideoEl === videoEl && !appState.isBlackScreen) {
+                        videoEl.play().catch(() => {});
+                    }
+                };
+                videoEl.addEventListener('canplay', resumeOnCanPlay);
+            });
+            videoEl.addEventListener('pause', () => {
+                if (currentActiveVideoEl === videoEl && !appState.isBlackScreen && (appState.currentSongIndex !== null || appState.specialMode !== null)) {
+                    setTimeout(() => {
+                        if (currentActiveVideoEl === videoEl && !appState.isBlackScreen && videoEl.paused) {
+                            videoEl.play().catch(() => {});
+                        }
+                    }, 50);
+                }
+            });
         }
 
         // Initialize candidate lists for all video elements
@@ -1703,7 +1732,7 @@
         if (videoIntro) setupVideoCandidates(videoIntro, SPECIAL_VIDEOS.intro.videoFiles);
         if (videoInter) setupVideoCandidates(videoInter, SPECIAL_VIDEOS.inter.videoFiles);
 
-        // Preload and buffer all videos directly into GPU/decoder memory on initialization
+        // Preload videos cleanly without overloading network decoders
         function preloadAllVideos() {
             allVideoElements.forEach(vel => {
                 vel.preload = 'auto';
@@ -1714,23 +1743,6 @@
                 const cl = candidateLists.get(vel);
                 if (!vel.getAttribute('src') && cl && cl.length > 0) {
                     vel.src = cl[0];
-                }
-
-                vel.load();
-
-                // Warm up decoder so initial frame is decoded into memory
-                const p = vel.play();
-                if (p !== undefined) {
-                    p.then(() => {
-                        if (currentActiveVideoEl !== vel) {
-                            vel.pause();
-                            try {
-                                if (vel.readyState >= 1) {
-                                    vel.currentTime = 0;
-                                }
-                            } catch (e) {}
-                        }
-                    }).catch(() => {});
                 }
             });
         }
@@ -2501,6 +2513,13 @@
             const dt = Math.min(100, now - appState.lastFrameTime);
             const dtSec = dt / 1000;
             appState.lastFrameTime = now;
+
+            // Watchdog: Ensure active video never stays paused unexpectedly during performance
+            if (currentActiveVideoEl && !appState.isBlackScreen && (appState.currentSongIndex !== null || appState.specialMode !== null)) {
+                if (currentActiveVideoEl.paused && currentActiveVideoEl.readyState >= 2) {
+                    currentActiveVideoEl.play().catch(() => {});
+                }
+            }
 
             appState.wavePhase += dtSec * 1.2;
 
